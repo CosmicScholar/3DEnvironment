@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ARIES_CORE_V0.4.1_UNIFIED</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #0b0e14; font-family: 'Segoe UI', sans-serif; touch-action: none; }
+        #hud { 
+            position: absolute; top: 20px; left: 20px; color: #8892b0; 
+            border-left: 2px solid #64ffda; background: rgba(10, 25, 47, 0.85); 
+            padding: 15px; border-radius: 4px; font-size: 11px; z-index: 10; pointer-events: none;
+            line-height: 1.6;
+        }
+        .val { color: #64ffda; font-weight: bold; }
+        .cmd { color: #64ffda; opacity: 0.7; font-family: monospace; }
+        .ctrl-zone { position: fixed; bottom: 40px; z-index: 100; display: none; }
+        #move-pad { left: 20px; width: 125px; height: 125px; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+        #look-zone { right: 20px; bottom: 40px; width: 160px; height: 160px; background: rgba(100, 255, 218, 0.03); border: 1px dashed rgba(100, 255, 218, 0.3); border-radius: 50%; align-items: center; justify-content: center; color: #64ffda; font-size: 9px; letter-spacing: 2px; }
+        .btn { background: rgba(100, 255, 218, 0.1); border: 1px solid #64ffda; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #64ffda; font-weight: bold; user-select: none; font-size: 12px; }
+        #b-j { position: fixed; bottom: 220px; right: 20px; width: 65px; height: 65px; border-radius: 50%; display:none; }
+        #state-btns { position: fixed; bottom: 180px; left: 20px; display: none; gap: 5px; }
+        .s-btn { width: 40px; height: 40px; font-size: 10px; }
+    </style>
+</head>
+<body>
+
+    <div id="hud">
+        <span style="letter-spacing: 2px; color: #fff;">ARIES_V0.4.1_UNIFIED</span><br>
+        --------------------------<br>
+        X: <span class="val" id="posx">0</span> | Z: <span class="val" id="posz">0</span><br>
+        FOV: <span class="val" id="fov_val">75</span> | HEIGHT: <span class="val" id="posy">1.60</span><br>
+        <br>
+        <span style="opacity: 0.5;">COMMANDS:</span><br>
+        [<span class="cmd">W,A,S,D / ARROWS</span>] MOVE / LOOK<br>
+        [<span class="cmd">SPACE</span>] JUMP | [<span class="cmd">R</span>] SNAPBACK<br>
+        [<span class="cmd">C</span>] CROUCH | [<span class="cmd">Z</span>] PRONE<br>
+        [<span class="cmd">T</span>] TOGGLE TOUCH UI<br>
+        [<span class="cmd">TOUCH DRAG</span>] SENSE_PAD
+    </div>
+
+    <div id="move-pad" class="ctrl-zone">
+        <div class="btn" style="opacity:0"></div><div class="btn" id="b-w">W</div><div class="btn" style="opacity:0"></div>
+        <div class="btn" id="b-a">A</div><div class="btn" style="opacity:0"></div><div class="btn" id="b-d">D</div>
+        <div class="btn" style="opacity:0"></div><div class="btn" id="b-s">S</div><div class="btn" style="opacity:0"></div>
+    </div>
+    
+    <div id="state-btns" class="ctrl-zone">
+        <div class="btn s-btn" id="b-c">C</div><div class="btn s-btn" id="b-z">Z</div><div class="btn s-btn" id="b-r">R</div>
+    </div>
+
+    <div id="look-zone" class="ctrl-zone">SENSE_PAD</div>
+    <div id="b-j" class="btn ctrl-zone">JMP</div>
+
+    <canvas id="glCanvas"></canvas>
+
+    <script id="vs" type="x-shader/x-vertex">
+        attribute float vID;
+        uniform vec3 uPos; uniform vec4 uQuat; uniform mat4 uProj; uniform float uPass;  
+        varying vec3 vCol; varying float vFog;
+        void main() {
+            float dim = 150.0;
+            float qID = floor(vID / 6.0);
+            float vIdx = mod(vID, 6.0);
+            vec2 off = vec2(0.0);
+            if(vIdx == 1.0 || vIdx == 4.0 || vIdx == 5.0) off.x = 1.0;
+            if(vIdx == 2.0 || vIdx == 3.0 || vIdx == 5.0) off.y = 1.0;
+            float fX = (mod(qID, dim) - dim/2.0) + off.x - fract(uPos.x);
+            float fZ = (floor(qID / dim) - dim/2.0) + off.y - fract(uPos.z);
+            float dist = length(vec2(fX, fZ));
+            float fY = (uPass < 0.5) ? -uPos.y * exp(-dist*0.04) : (40.0 - uPos.y) * exp(-dist*0.04);
+            float rX = fX * uQuat.y - fZ * uQuat.x;
+            float rZ = fX * uQuat.x + fZ * uQuat.y;
+            float tY = fY * uQuat.w - rZ * uQuat.z;
+            float tZ = fY * uQuat.z + rZ * uQuat.w;
+            gl_Position = uProj * vec4(rX, tY, -(tZ + 1.0), 1.0);
+            vCol = (uPass < 0.5) ? vec3(0.1, 0.4, 0.4) : vec3(0.2, 0.1, 0.3);
+            vFog = smoothstep(72.0, 12.0, dist);
+        }
+    </script>
+
+    <script id="fs" type="x-shader/x-fragment">
+        precision mediump float;
+        varying vec3 vCol; varying float vFog;
+        void main() { gl_FragColor = vec4(mix(vec3(0.04, 0.05, 0.08), vCol, vFog), 1.0); }
+    </script>
+
+    <script>
+        const canvas = document.getElementById('glCanvas');
+        const gl = canvas.getContext('webgl');
+        gl.enable(gl.DEPTH_TEST);
+
+        const setUI = (state) => {
+            document.querySelectorAll('.ctrl-zone').forEach(el => el.style.display = state);
+            document.getElementById('b-j').style.display = state;
+        };
+
+        if ('ontouchstart' in window) setUI('flex');
+
+        const createShader = (t, s) => { let sh = gl.createShader(t); gl.shaderSource(sh, s); gl.compileShader(sh); return sh; };
+        const prog = gl.createProgram();
+        gl.attachShader(prog, createShader(gl.VERTEX_SHADER, document.getElementById('vs').text));
+        gl.attachShader(prog, createShader(gl.FRAGMENT_SHADER, document.getElementById('fs').text));
+        gl.linkProgram(prog); gl.useProgram(prog);
+
+        const vCount = 150 * 150 * 6;
+        const vIDArr = new Float32Array(vCount);
+        for(let i=0; i<vCount; i++) vIDArr[i] = i;
+        gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+        gl.bufferData(gl.ARRAY_BUFFER, vIDArr, gl.STATIC_DRAW);
+
+        const uLoc = { pos: gl.getUniformLocation(prog, 'uPos'), quat: gl.getUniformLocation(prog, 'uQuat'), proj: gl.getUniformLocation(prog, 'uProj'), pass: gl.getUniformLocation(prog, 'uPass') };
+        const vIDLoc = gl.getAttribLocation(prog, 'vID');
+        gl.enableVertexAttribArray(vIDLoc); gl.vertexAttribPointer(vIDLoc, 1, gl.FLOAT, false, 0, 0);
+
+        let pX = 0, pY = 1.6, pZ = 0, yaw = 0, pitch = 0, fov = 75, vY = 0, grounded = true;
+        let targetHeight = 1.6, moveSpeed = 0.15;
+        const keys = {};
+
+        let lookId = null, lastDist = 0, isLooking = false, touchStart = {x:0, y:0};
+        const lookZone = document.getElementById('look-zone');
+
+        window.addEventListener('touchstart', (e) => {
+            for(let i=0; i<e.changedTouches.length; i++) {
+                let t = e.changedTouches[i];
+                let rect = lookZone.getBoundingClientRect();
+                if(t.clientX > rect.left && t.clientX < rect.right && t.clientY > rect.top) {
+                    isLooking = true; lookId = t.identifier;
+                    touchStart = {x: t.clientX, y: t.clientY};
+                }
+            }
+        }, { passive: false });
+
+        window.addEventListener('touchmove', (e) => {
+            if (e.cancelable) e.preventDefault();
+            for(let i=0; i<e.touches.length; i++) {
+                let t = e.touches[i];
+                if (isLooking && t.identifier === lookId) {
+                    let dx = t.clientX - touchStart.x;
+                    let dy = t.clientY - touchStart.y;
+                    yaw += dx * 0.006; pitch = Math.max(-1.5, Math.min(1.5, pitch + dy * 0.006));
+                    touchStart = {x: t.clientX, y: t.clientY};
+                }
+                if (e.touches.length === 2) {
+                    let d = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
+                    if (lastDist > 0) fov = Math.max(30, Math.min(120, fov + (lastDist - d) * 0.15));
+                    lastDist = d;
+                }
+            }
+        }, { passive: false });
+
+        window.addEventListener('touchend', (e) => {
+            for(let i=0; i<e.changedTouches.length; i++) {
+                if(e.changedTouches[i].identifier === lookId) { isLooking = false; lookId = null; }
+            }
+            if(e.touches.length < 2) lastDist = 0;
+        }, { passive: false });
+
+        window.onkeydown = e => {
+            keys[e.key.toLowerCase()] = true;
+            if(e.key.toLowerCase() === 't') {
+                const cur = document.getElementById('look-zone').style.display;
+                setUI(cur === 'none' ? 'flex' : 'none');
+            }
+        };
+        window.onkeyup = e => keys[e.key.toLowerCase()] = false;
+        window.onwheel = e => fov = Math.max(30, Math.min(120, fov + e.deltaY * 0.05));
+        
+        const bind = (id, k) => { 
+            let el = document.getElementById(id); 
+            el.addEventListener('touchstart', (e) => { e.preventDefault(); keys[k] = true; }, {passive: false});
+            el.addEventListener('touchend', (e) => { e.preventDefault(); keys[k] = false; }, {passive: false});
+        };
+        bind('b-w','w'); bind('b-s','s'); bind('b-a','a'); bind('b-d','d'); bind('b-j',' ');
+        bind('b-c','c'); bind('b-z','z'); bind('b-r','r');
+
+        function draw() {
+            // Desk Look
+            if(keys['arrowleft']) yaw -= 0.03; if(keys['arrowright']) yaw += 0.03;
+            if(keys['arrowup']) pitch = Math.min(1.5, pitch - 0.03);
+            if(keys['arrowdown']) pitch = Math.max(-1.5, pitch + 0.03);
+
+            if (keys['z']) { targetHeight = 0.2; moveSpeed = 0.04; }
+            else if (keys['c']) { targetHeight = 0.8; moveSpeed = 0.08; }
+            else { targetHeight = 1.6; moveSpeed = 0.15; }
+
+            if (grounded) pY += (targetHeight - pY) * 0.15;
+            if (keys['r']) fov += (75 - fov) * 0.1;
+
+            if (keys[' ' ] && grounded && targetHeight > 0.5) { vY = 0.22; grounded = false; }
+            pY += vY; if (!grounded) vY -= 0.01; 
+            if (pY <= targetHeight && !grounded) { pY = targetHeight; vY = 0; grounded = true; }
+
+            if (keys['w']) { pX -= Math.sin(yaw)*moveSpeed; pZ += Math.cos(yaw)*moveSpeed; }
+            if (keys['s']) { pX += Math.sin(yaw)*moveSpeed; pZ -= Math.cos(yaw)*moveSpeed; }
+            if (keys['a']) { pX -= Math.cos(yaw)*moveSpeed; pZ -= Math.sin(yaw)*moveSpeed; }
+            if (keys['d']) { pX += Math.cos(yaw)*moveSpeed; pZ += Math.sin(yaw)*moveSpeed; }
+
+            document.getElementById('posx').innerText = pX.toFixed(1);
+            document.getElementById('posz').innerText = pZ.toFixed(1);
+            document.getElementById('posy').innerText = pY.toFixed(2);
+            document.getElementById('fov_val').innerText = fov.toFixed(0);
+
+            canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.clearColor(0.04, 0.05, 0.08, 1.0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            const f = 1.0 / Math.tan(fov * Math.PI / 360); const aspect = canvas.width / canvas.height;
+            gl.uniformMatrix4fv(uLoc.proj, false, [f/aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, -1.0, -1, 0, 0, -0.01, 0]);
+            gl.uniform4f(uLoc.quat, Math.sin(yaw), Math.cos(yaw), Math.sin(pitch), Math.cos(pitch));
+            gl.uniform3f(uLoc.pos, pX, pY, pZ);
+            gl.uniform1f(uLoc.pass, 1.0); gl.drawArrays(gl.LINES, 0, vCount);
+            gl.clear(gl.DEPTH_BUFFER_BIT);
+            gl.uniform1f(uLoc.pass, 0.0); gl.drawArrays(gl.LINES, 0, vCount);
+            requestAnimationFrame(draw);
+        }
+        draw();
+    </script>
+</body>
+</html>
