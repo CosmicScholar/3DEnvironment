@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"><title>ARIES_CORE_V0.1</title>
+    <style>
+        /* MINIMALIST HUD: Zero-latency styling */
+        body { margin: 0; overflow: hidden; background: #0b0e14; font-family: 'Segoe UI', sans-serif; }
+        #hud { 
+            position: absolute; top: 20px; left: 20px; color: #8892b0; 
+            border-left: 2px solid #64ffda; padding: 15px; pointer-events: none; 
+            background: rgba(10, 25, 47, 0.85); border-radius: 4px; font-size: 12px;
+        }
+        .val { color: #64ffda; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div id="hud">
+        CORE: ARIES_V0.1 [STABLE]<br>
+        STATUS: SINGULARITY_LOCKED<br>
+        --------------------------<br>
+        POS: <span id="posx" class="val">0</span>, <span id="posz" class="val">0</span><br>
+        VIEW: <span id="deg" class="val">0</span>° | <span id="pitch" class="val">0</span>°
+    </div>
+    <canvas id="glCanvas"></canvas>
+
+    <script id="vs" type="x-shader/x-vertex">
+        attribute float vID;
+        uniform vec2 uPos;
+        uniform vec4 uQuat;   // OPTIMIZED: Pre-calculated [sinYaw, cosYaw, sinPitch, cosPitch]
+        uniform mat4 uProj;
+        uniform float uPass;  // Layer toggle: 0=Floor, 1=Sky
+        varying vec3 vCol;
+        varying float vFog;
+
+        void main() {
+            // 1. GRID ASSEMBLY
+            float dim = 150.0;
+            float qID = floor(vID / 6.0);
+            float vIdx = mod(vID, 6.0);
+            
+            // Build squares from a linear ID stream
+            vec2 off = vec2(0.0);
+            if(vIdx == 1.0 || vIdx == 4.0 || vIdx == 5.0) off.x = 1.0;
+            if(vIdx == 2.0 || vIdx == 3.0 || vIdx == 5.0) off.y = 1.0;
+
+            // 2. THE TREADMILL (Infinite Tiling)
+            // Fract(uPos) creates the smooth "slide" while the grid technically never leaves
+            float fX = (mod(qID, dim) - dim/2.0) + off.x - fract(uPos.x);
+            float fZ = (floor(qID / dim) - dim/2.0) + off.y - fract(uPos.y);
+            
+            // 3. SOVEREIGN CONVERGENCE
+            // Exponential decay ensures the ceiling and floor meet at the horizon suture
+            float dist = length(vec2(fX, fZ));
+            float convergence = exp(-dist * 0.04); 
+            float fY = (uPass < 0.5) ? -2.0 * convergence : 40.0 * convergence;
+
+            // 4. OPTIMIZED ROTATION
+            // Rotating around the origin using pre-computed trig to save GPU cycles
+            float rX = fX * uQuat.y - fZ * uQuat.x;
+            float rZ = fX * uQuat.x + fZ * uQuat.y;
+            float tY = fY * uQuat.w - rZ * uQuat.z;
+            float tZ = fY * uQuat.z + rZ * uQuat.w;
+
+            // 5. THE SINGULARITY PATCH
+            // Pushing the world -1.0 units past the lens to delete the eye-void
+            gl_Position = uProj * vec4(rX, tY, -(tZ + 1.0), 1.0);
+            
+            // 6. AESTHETIC BUFFER
+            vCol = (uPass < 0.5) ? vec3(0.1, 0.4, 0.4) : vec3(0.2, 0.1, 0.3);
+            vFog = smoothstep(dim * 0.48, 12.0, dist);
+        }
+    </script>
+
+    <script id="fs" type="x-shader/x-fragment">
+        precision mediump float;
+        varying vec3 vCol;
+        varying float vFog;
+        void main() {
+            vec3 bgColor = vec3(0.04, 0.05, 0.08); // Dark Navy Depth
+            gl_FragColor = vec4(mix(bgColor, vCol, vFog), 1.0);
+        }
+    </script>
+
+    <script>
+        const canvas = document.getElementById('glCanvas');
+        const gl = canvas.getContext('webgl', { antialias: true });
+        gl.enable(gl.DEPTH_TEST);
+
+        // SHADER COMPILER: Converts text to GPU machine code
+        const createShader = (gl, type, src) => {
+            const s = gl.createShader(type);
+            gl.shaderSource(s, src); gl.compileShader(s);
+            return s;
+        };
+
+        const prog = gl.createProgram();
+        gl.attachShader(prog, createShader(gl, gl.VERTEX_SHADER, document.getElementById('vs').text));
+        gl.attachShader(prog, createShader(gl, gl.FRAGMENT_SHADER, document.getElementById('fs').text));
+        gl.linkProgram(prog); gl.useProgram(prog);
+
+        // BUFFER: Injecting 135,000 raw IDs into the GPU pipeline
+        const vCount = 150 * 150 * 6;
+        const vIDArr = new Float32Array(vCount);
+        for(let i=0; i<vCount; i++) vIDArr[i] = i;
+        gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+        gl.bufferData(gl.ARRAY_BUFFER, vIDArr, gl.STATIC_DRAW);
+
+        // CACHING: Finding uniform addresses once to prevent frame-lag
+        const uLoc = {
+            pos: gl.getUniformLocation(prog, 'uPos'),
+            quat: gl.getUniformLocation(prog, 'uQuat'),
+            proj: gl.getUniformLocation(prog, 'uProj'),
+            pass: gl.getUniformLocation(prog, 'uPass')
+        };
+
+        const vIDLoc = gl.getAttribLocation(prog, 'vID');
+        gl.enableVertexAttribArray(vIDLoc);
+        gl.vertexAttribPointer(vIDLoc, 1, gl.FLOAT, false, 0, 0);
+
+        let pX = 0, pZ = 0, yaw = 0, pitch = 0;
+        const keys = {};
+        window.onkeydown = e => keys[e.key] = true;
+        window.onkeyup = e => keys[e.key] = false;
+
+        function draw() {
+            // INPUT: Keyboard interface
+            if (keys['ArrowLeft']) yaw += 0.03;
+            if (keys['ArrowRight']) yaw -= 0.03;
+            if (keys['ArrowUp']) pitch -= 0.02;
+            if (keys['ArrowDown']) pitch += 0.02;
+            let spd = 0.15;
+            if (keys['w'] || keys['W']) { pX -= Math.sin(yaw)*spd; pZ += Math.cos(yaw)*spd; }
+            if (keys['s'] || keys['S']) { pX += Math.sin(yaw)*spd; pZ -= Math.cos(yaw)*spd; }
+
+            // HUD UPDATES
+            document.getElementById('posx').innerText = pX.toFixed(2);
+            document.getElementById('posz').innerText = pZ.toFixed(2);
+            document.getElementById('deg').innerText = (yaw * 57.3).toFixed(0);
+            document.getElementById('pitch').innerText = (pitch * 57.3).toFixed(0);
+
+            // VIEWPORT SYNC
+            canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.clearColor(0.04, 0.05, 0.08, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+            // THE MATRIX PATCH
+            // Near-clip: -0.01 | Z-Scale: -1.0 | FOV: 75 degrees
+            const f = 1.0 / Math.tan(75 * Math.PI / 360); 
+            const aspect = canvas.width / canvas.height;
+            gl.uniformMatrix4fv(uLoc.proj, false, [f/aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, -1.0, -1, 0, 0, -0.01, 0]);
+
+            // PERFORMANCE FIX: Pre-calculating trig once per frame
+            gl.uniform4f(uLoc.quat, Math.sin(yaw), Math.cos(yaw), Math.sin(pitch), Math.cos(pitch));
+            gl.uniform2f(uLoc.pos, pX, pZ);
+
+            // DOUBLE PASS: Painter's Suture
+            gl.uniform1f(uLoc.pass, 1.0); // Render Sky
+            gl.drawArrays(gl.LINES, 0, vCount);
+            gl.clear(gl.DEPTH_BUFFER_BIT); // Wipe Z-buffer to prevent shimmering
+            gl.uniform1f(uLoc.pass, 0.0); // Render Floor
+            gl.drawArrays(gl.LINES, 0, vCount);
+
+            requestAnimationFrame(draw);
+        }
+        draw();
+    </script>
+</body>
+</html>
